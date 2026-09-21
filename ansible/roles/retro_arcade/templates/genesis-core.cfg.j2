@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+#
+# Genesis Plus GX per-core config. Managed here so it survives image rebuilds
+# and fresh deploys -- RetroArch only writes this file when someone picks
+# "Save Core Overrides" in the menu, and a setting changed in the menu without
+# saving is lost when the emulator exits.
+#
+# Keyboard laid out as the physical six-button pad:
+#     X Y Z   ->  Q W E
+#     A B C   ->  A S D
+# Genesis Plus GX maps console buttons onto RetroPad slots as
+#   A->Y  B->B  C->A  X->L  Y->X  Z->R  Mode->Select
+# which is why Genesis X and Z show up as "L Button" and "R Button" in the
+# Port 1 Controls screen. The bindings below are written in RetroPad terms so
+# the KEYS come out in console order.
+input_player1_y = "a"
+input_player1_b = "s"
+input_player1_a = "d"
+input_player1_l = "q"
+input_player1_x = "w"
+input_player1_r = "e"
+input_player1_start = "enter"
+input_player1_select = "rshift"
+input_player1_up = "up"
+input_player1_down = "down"
+input_player1_left = "left"
+input_player1_right = "right"
+
+# Always present a SIX-button pad, even to games that only understand three.
+# The 6-button pad is backward compatible; 3-button games ignore the extras.
+# Without this RetroArch hands the core a plain RetroPad, which it treats as
+# 3-button -- six-button fighting titles then offer only three attacks.
+# 513 = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 1) = ((1+1) << 8) | 1
+# A few pre-1993 titles predate the 6-button pad and can misread it; hold
+# Mode (Right Shift) at boot for those, or give that game its own override.
+input_libretro_device_p1 = "{{ retro_genesis_pad_device }}"
+input_libretro_device_p2 = "{{ retro_genesis_pad_device }}"

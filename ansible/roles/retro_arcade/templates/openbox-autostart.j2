@@ -1,0 +1,29 @@
+# {{ ansible_managed }}
+#
+# This file lives in the PERSISTENT volume on purpose. The image ships a copy at
+# /defaults/autostart, but the LinuxServer base only seeds /defaults -> /config
+# when the target does not already exist -- so editing the image has no effect
+# on a container whose /config was created by an earlier version. Managing it
+# here is the only way a change actually lands.
+
+# Gradient first, then the wallpaper composited over it. If it is RGBA, the
+# transparent background lets the gradient show through rather than painting a
+# white box. -full scales it to fit whatever resolution the session came up at
+# (Selkies picks that per client), preserving aspect.
+# Keyboard auto-repeat OFF. Holding a key otherwise makes X emit a continuous
+# stream of press/release pairs, and in a remote session every one of them
+# crosses the network to the browser. A driving game where the accelerator is
+# held for minutes turns into thousands of round-trips and the emulation
+# crawls -- a racing title on the 0.78 core was the case that surfaced this. Games want
+# a key HELD, not typed; auto-repeat exists for text entry.
+# Trade-off: holding backspace in the terminal no longer repeats.
+xset r off &
+
+if [ -r "{{ retro_wallpaper }}" ]; then
+    hsetroot -add "{{ retro_bg_from }}" -add "{{ retro_bg_to }}" -gradient 45 -full "{{ retro_wallpaper }}" &
+else
+    hsetroot -add "{{ retro_bg_from }}" -add "{{ retro_bg_to }}" -gradient 45 &
+fi
+
+# Nothing auto-launches a game. If one wedged, an autostarted copy would make
+# the container awkward to recover.

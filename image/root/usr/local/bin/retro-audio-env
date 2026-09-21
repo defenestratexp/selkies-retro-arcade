@@ -1,0 +1,19 @@
+# Sourced, not executed. Shared environment for everything the arcade launches.
+#
+# Audio: this base image puts the PulseAudio socket at /defaults/native
+# (PULSE_RUNTIME_PATH=/defaults) rather than the usual /run/user/<uid>/pulse.
+# openbox does not inherit that, so anything launched from the desktop menu
+# looks in the default location, finds no server, and silently plays to nothing.
+export PULSE_RUNTIME_PATH="${PULSE_RUNTIME_PATH:-/defaults}"
+export PULSE_SERVER="${PULSE_SERVER:-unix:/defaults/native}"
+export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulseaudio}"
+
+# User-editable runtime settings. Lives in the persistent volume so it can be
+# changed from the arcade terminal and takes effect on the next launch -- no
+# image rebuild, no redeploy. Seeded by ansible only if absent, so edits stick.
+[ -r /config/arcade.conf ] && . /config/arcade.conf
+
+# Wine virtual desktop size for legacy Windows applications. They ask X for a
+# mode they recognise; the Selkies display offers only huge ones, so Wine
+# emulates the mode in a window instead. Raise this to give the app more room.
+export WINE_DESKTOP="${WINE_DESKTOP:-640x480}"

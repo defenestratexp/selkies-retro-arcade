@@ -1,0 +1,114 @@
+---
+# Retro arcade: a Linux desktop streamed to the browser via Selkies (WebRTC),
+# fronted by a reverse proxy at retro.example.internal.
+#
+# Content lives LOCAL on the docker host on purpose. The NAS holds the archive
+# and is the source of truth, but nothing at runtime touches NFS -- a stale
+# handle must not be able to take the arcade down. See tasks/main.yml.
+
+retro_root: /opt/retro
+retro_games_dir: "{{ retro_root }}/games"      # read-only into the container
+retro_state_dir: "{{ retro_root }}/state"      # wine prefix, saves, configs
+
+# Published on the docker host; the reverse proxy forwards to this.
+retro_http_port: 3000
+
+retro_ecr_registry: "123456789012.dkr.ecr.us-west-2.amazonaws.com"
+retro_ecr_region: us-west-2
+retro_image: "{{ retro_ecr_registry }}/homelab/retro-arcade:latest"
+retro_container_name: retro-arcade
+retro_timezone: "America/Los_Angeles"
+retro_title: "Homelab Arcade"
+
+# Deploy-time only. Mounted read-only, rsynced, then unmounted -- so the running
+# arcade has no NFS dependency at all. Expected layout of this export:
+#   _installers/   Windows installers you own (see retro-install)
+retro_archive_export: "nas.example.internal:/export/retro"
+retro_archive_mnt: /mnt/retro-archive
+
+# The container runs as this uid/gid so state/ files stay owned by the
+# desktop user on the host.
+retro_uid: 1000
+retro_gid: 1000
+
+# Selkies tuning. Low-resolution content -- software encode is ample and no
+# /dev/dri passthrough is needed.
+retro_screen: "640x480"      # PINNED session size (SELKIES_MANUAL_*).
+                             #
+                             # Do not pin this BELOW the largest mode an app asks
+                             # for. An app whose menus run at 640x480 but whose
+                             # main view is 320x200 will not draw at all in a
+                             # 320x200 session: Wine resizes its virtual desktop
+                             # to follow the app's mode changes, but the X screen
+                             # cannot go below what the app needs to start and
+                             # draw its frontend. Accepted consequence: the
+                             # smaller mode renders in the top-left corner.
+retro_framerate: 30
+
+# Openbox theme. Shipped with openbox; falls back to Default if absent.
+retro_openbox_theme: Clearlooks
+
+# Desktop background: an optional image composited over a gradient. If the file
+# does not exist in the image, only the gradient is drawn.
+retro_wallpaper: /usr/share/backgrounds/arcade.png
+retro_bg_from: "#0f2027"
+retro_bg_to: "#2c5364"
+
+# Wine virtual desktop size. Seeded into /config/arcade.conf once; after that it
+# is user-editable in place (retro-res), so changing this default only affects
+# a container whose arcade.conf does not yet exist.
+retro_wine_desktop: 640x480
+
+# Windows applications installed into the Wine prefix (via retro-install) that
+# should get their own desktop-menu entry. `exe` is the file name launch-wine
+# searches the prefix for; `desktop` optionally overrides WINE_DESKTOP.
+retro_wine_apps: []
+#  - { label: "Some App (1998)", exe: "SomeApp.exe" }
+#  - { label: "Other App",       exe: "other.exe", desktop: "800x600" }
+
+# Emulated systems. Each gets Favorites / Confirmed Working / Collections /
+# All Games / Settings in the desktop menu. MAME is handled separately: a
+# mixed-era arcade library needs per-title routing to several MAME versions.
+retro_emu_systems:
+  - { key: nes,      label: "NES" }
+  - { key: gameboy,  label: "Game Boy" }
+  - { key: sms,      label: "Master System" }
+  - { key: genesis,  label: "Genesis" }
+  - { key: gamegear, label: "Game Gear" }
+
+# Your own ROM dumps live on the NAS and are copied local, same as the rest: no
+# runtime NFS, so a NAS reboot cannot wedge a running emulator.
+# They get their OWN directory and their OWN bind mount, deliberately NOT under
+# retro_games_dir: that sync runs `rsync -a --delete` from the archive, which
+# would delete anything living there that the archive does not contain -- i.e.
+# every ROM, on the next deploy.
+# Expected layout of the export:
+#   <retro_roms_subdir>/<system>/...    one directory per retro_emu_systems key
+#   <retro_roms_subdir>/mame/roms/      MAME romsets
+#   <retro_roms_subdir>/neogeo/         Neo Geo romsets
+#   _verified/mame-routing.json         romset -> MAME version (required)
+#   _verified/mame-games.json           aliases / preferred flags (optional)
+#   _verified/hiscore/<core>.dat        per-core hiscore maps (optional)
+retro_roms_dir: /opt/retro/roms
+retro_roms_export: "nas.example.internal:/export/roms"
+retro_roms_mnt: /mnt/retro-roms
+retro_roms_subdir: "roms"
+
+# 6-button Mega Drive pad. 513 = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 1).
+retro_genesis_pad_device: "513"
+
+# RetroArch core-config directory names for the pinned MAME cores.
+retro_mame_cores:
+  - "MAME 2003-Plus"
+  - "MAME 2010"
+  - "MAME 2016"
+
+# Neo Geo gets its OWN directory rather than joining the MAME pool: that pool is
+# synced with rsync --delete from the mame source, which would remove anything
+# not present there on the next deploy. Separate tree, separate mount, added to
+# MAME's rompath instead.
+retro_neogeo_dir: /opt/retro/roms/neogeo
+
+# Where the state volume is mounted INSIDE the container. MAME writes its own
+# config using paths it will see at runtime, not host paths.
+retro_state_dir_in_container: /config

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+#
+# openbox-session sources this before starting the session, so everything the
+# desktop launches inherits it -- including things we do not wrap ourselves.
+#
+# This base image puts the PulseAudio socket at /defaults/native rather than the
+# usual /run/user/<uid>/pulse, and does NOT export that into the session. Without
+# these, libpulse looks in the default location, finds no server, and every app
+# plays silently. Selkies streams whatever reaches the null sink's monitor, so
+# audio that never reaches the sink never reaches the browser.
+export PULSE_RUNTIME_PATH=/defaults
+export PULSE_SERVER=unix:/defaults/native
+export SDL_AUDIODRIVER=pulseaudio

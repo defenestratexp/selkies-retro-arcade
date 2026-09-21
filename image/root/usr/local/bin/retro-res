@@ -1,0 +1,29 @@
+#!/bin/bash
+# Show or change the Wine virtual desktop size, without a redeploy.
+#   retro-res              -- show current
+#   retro-res 1024x768     -- set it
+set -u
+CONF=/config/arcade.conf
+touch "$CONF" 2>/dev/null || { echo "cannot write $CONF"; exit 1; }
+
+set_var() {  # name value
+    sed -i "/^${1}=/d" "$CONF"
+    echo "${1}=${2}" >> "$CONF"
+    echo "  ${1} = ${2}"
+}
+valid() { echo "$1" | grep -qE '^[0-9]{3,5}x[0-9]{3,5}$'; }
+
+case "${1:-}" in
+  "")
+      echo "Current (from $CONF, default where unset):"
+      grep -E '^WINE_DESKTOP=' "$CONF" 2>/dev/null | sed 's/^/  /' \
+          || echo "  WINE_DESKTOP = 640x480 (default)"
+      echo
+      echo "Usage: retro-res 1024x768"
+      ;;
+  *)
+      valid "$1" || { echo "Not a resolution: '$1'. Example: retro-res 1024x768"; exit 1; }
+      set_var WINE_DESKTOP "$1" ;;
+esac
+echo
+echo "Takes effect next time you launch an app from the menu."

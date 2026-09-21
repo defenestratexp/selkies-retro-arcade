@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+#
+# Read from $HOME/.mame -- launch-mame sets HOME=/config -- so this and every
+# directory below live in the persistent volume and survive a rebuild.
+#
+# Why the hiscore plugin: most pre-1985 arcade boards keep high
+# scores in volatile RAM with no battery backing, so nothing persists by
+# default and a score is lost the moment the game closes. The plugin ships with
+# hiscore.dat, which knows where each supported game stores them, and writes
+# them out on exit. Games absent from that map still will not persist.
+#
+# autosave is deliberately NOT enabled. It would snapshot state on exit and
+# resume there, which is closest to how the RetroArch cores behave, but it means
+# relaunching mid-credit instead of at the attract screen. Set "autosave 1" here
+# if that is wanted.
+plugin                    hiscore
+hiscore_directory         {{ retro_state_dir_in_container }}/.mame/hiscore
+nvram_directory           {{ retro_state_dir_in_container }}/.mame/nvram
+state_directory           {{ retro_state_dir_in_container }}/.mame/sta
+snapshot_directory        {{ retro_state_dir_in_container }}/.mame/snap
+cfg_directory             {{ retro_state_dir_in_container }}/.mame/cfg

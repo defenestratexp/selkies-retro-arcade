@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""Generate an openbox pipe menu of ROMs, on demand.
+
+Openbox calls this when a submenu is opened, so the listing is always current --
+dropping in new ROMs needs no redeploy. Generating rather than templating also
+avoids writing a menu.xml with thousands of entries that openbox would reparse
+on every right-click.
+
+  retro-menu nes all              -> letter groups, or a flat list if small
+  retro-menu nes all D-F          -> the D-F group
+  retro-menu nes favorites        -> curated list
+  retro-menu nes working          -> confirmed-working list
+
+Curated lists are plain text, one ROM path (relative to the system's ROM root)
+per line. Adding a favourite is appending a line -- no rebuild, no redeploy.
+"""
+import json, os, sys
+from xml.sax.saxutils import escape, quoteattr
+
+ROM_ROOT  = "/roms"
+LIST_ROOT = "/config/arcade"
+LAUNCH    = "/usr/local/bin/launch-rom"
+SELF      = "/usr/local/bin/retro-menu"
+FLAT_MAX  = 60          # above this, split into letter groups
+
+# --- MAME ---------------------------------------------------------------
+# The arcade collection is mixed-era: no single MAME version runs it all.
+# routing.json (from an external compatibility sweep) maps each romset to the version that
+# actually loads it. names.json optionally maps romset -> friendly title,
+# because a short romset code is not a useful thing to read in a menu.
+MAME_ROUTING = "/config/arcade/mame/routing.json"
+MAME_NAMES   = "/config/arcade/mame/names.json"
+MAME_LAUNCH  = "/usr/local/bin/launch-mame"
+CORE_LABELS  = [
+    ("mame0264",      "MAME 0.264 (current)"),
+    ("mame2016",      "MAME 0.174"),
+    ("mame2010",      "MAME 0.139"),
+    ("mame2003_plus", "MAME 0.78"),
+]
+
+
+def mame_routing():
+    try:
+        with open(MAME_ROUTING) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def mame_names():
+    try:
+        with open(MAME_NAMES) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def mame_item(rom, label):
+    cmd = "%s %s" % (MAME_LAUNCH, shq(rom))
+    out("  <item label=%s><action name=\"Execute\"><command>%s</command></action></item>"
+        % (quoteattr(label), escape(cmd)))
+
+EXTS = {
+    "nes":      (".nes", ".zip"),
+    "gameboy":  (".gb", ".gbc", ".zip"),
+    "sms":      (".sms", ".7z", ".zip"),
+    "genesis":  (".md", ".bin", ".gen", ".smd", ".zip"),
+    "gamegear": (".gg", ".zip"),
+}
+
+
+def out(s):
+    sys.stdout.write(s + "\n")
+
+
+def shq(s):
+    """POSIX single-quote. Openbox parses <command> shell-style, so an
+    apostrophe in a ROM name or a space in a collection name silently
+    truncates the argument otherwise."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def scan(system):
+    """Every ROM under the system's root, recursively.
+
+    Recursive on purpose: the collections arrived nested unevenly
+    (nes/nes/nes/VS/..., gameboy/Game Boy/Game Boy/...), so a single-level
+    glob would show an empty menu for a directory full of games.
+    """
+    root = os.path.join(ROM_ROOT, system)
+    exts = EXTS.get(system, (".zip",))
+    found = []
+    for dirpath, dirs, files in os.walk(root):
+        # Collections zipped on a Mac carry __MACOSX/ full of AppleDouble
+        # resource forks ("._Name.nes", ~70 bytes). They are not ROMs, and they
+        # sort ABOVE the real entry because "." precedes any digit or letter --
+        # so the first plausible-looking item in the menu is the broken one.
+        dirs[:] = [d for d in dirs if d != "__MACOSX"]
+        for f in files:
+            if f.startswith("._"):
+                continue
+            if f.lower().endswith(exts):
+                full = os.path.join(dirpath, f)
+                found.append((os.path.relpath(full, root), full))
+    found.sort(key=lambda t: t[0].lower())
+    return found
+
+
+def title(relpath):
+    return os.path.splitext(os.path.basename(relpath))[0]
+
+
+def item(system, label, full):
+    cmd = "%s %s %s" % (LAUNCH, system, shq(full))
+    out("  <item label=%s><action name=\"Execute\"><command>%s</command></action></item>"
+        % (quoteattr(label), escape(cmd)))
+
+
+def group_of(name):
+    c = name[:1].upper()
+    if not c.isalpha():
+        return "0-9"
+    for lo, hi in (("A", "C"), ("D", "F"), ("G", "I"), ("J", "L"), ("M", "O"),
+                   ("P", "R"), ("S", "U"), ("V", "Z")):
+        if lo <= c <= hi:
+            return "%s-%s" % (lo, hi)
+    return "0-9"
+
+
+def collections(system):
+    """Named lists under <system>/collections/ -- each becomes a submenu.
+
+    For grouping a series that is scattered across the alphabet: a few dozen
+    related builds can land in four different letter groups under All Games,
+    which makes them impossible to browse as the set they actually are.
+    """
+    d = os.path.join(LIST_ROOT, system, "collections")
+    if not os.path.isdir(d):
+        return []
+    return sorted(f[:-5] for f in os.listdir(d) if f.endswith(".list"))
+
+
+def read_list(system, which):
+    if which.startswith("collection:"):
+        p = os.path.join(LIST_ROOT, system, "collections", which.split(":", 1)[1] + ".list")
+    else:
+        p = os.path.join(LIST_ROOT, system, which + ".list")
+    if not os.path.exists(p):
+        return []
+    with open(p) as fh:
+        return [l.strip() for l in fh if l.strip() and not l.startswith("#")]
+
+
+def main():
+    if len(sys.argv) < 3:
+        out("<openbox_pipe_menu/>")
+        return
+    system, mode = sys.argv[1], sys.argv[2]
+    group = sys.argv[3] if len(sys.argv) > 3 else None
+
+    out("<openbox_pipe_menu>")
+
+    if system == "mame":
+        routing = mame_routing()
+        names = mame_names()
+        if mode == "root":
+            # The whole MAME menu, generated so core counts stay live.
+            for which, label in (("favorites", "Favorites"), ("working", "Confirmed Working")):
+                n = len(read_list("mame", which))
+                out("  <menu id=%s label=%s execute=%s/>"
+                    % (quoteattr("mame-" + which),
+                       quoteattr("%s  (%d)" % (label, n)),
+                       quoteattr("%s mame %s" % (SELF, which))))
+            out("  <separator />")
+            for key, label in CORE_LABELS:
+                n = sum(1 for v in routing.values() if v == key)
+                if n:
+                    out("  <menu id=%s label=%s execute=%s/>"
+                        % (quoteattr("mame-%s" % key),
+                           quoteattr("%s  (%d)" % (label, n)),
+                           quoteattr("%s mame %s" % (SELF, shq("core:" + key)))))
+            if not routing:
+                out("  <item label=\"routing.json missing - run the compatibility sweep\"><action name=\"Execute\"><command>true</command></action></item>")
+            else:
+                total = len(routing)
+                out("  <separator />")
+                out("  <item label=%s><action name=\"Execute\"><command>true</command></action></item>"
+                    % quoteattr("%d games playable" % total))
+        elif mode == "cores":
+            for key, label in CORE_LABELS:
+                n = sum(1 for v in routing.values() if v == key)
+                if n:
+                    out("  <menu id=%s label=%s execute=%s/>"
+                        % (quoteattr("mame-%s" % key),
+                           quoteattr("%s  (%d)" % (label, n)),
+                           quoteattr("%s mame %s" % (SELF, shq("core:" + key)))))
+            if not routing:
+                out("  <item label=\"routing.json missing\"><action name=\"Execute\"><command>true</command></action></item>")
+        elif mode.startswith("core:"):
+            key = mode.split(":", 1)[1]
+            games = sorted((r for r, v in routing.items() if v == key), key=str.lower)
+            disp = lambda r: names.get(r, r)
+            if group:
+                for r in games:
+                    if group_of(disp(r)) == group:
+                        mame_item(r, disp(r))
+            elif len(games) <= FLAT_MAX:
+                for r in games:
+                    mame_item(r, disp(r))
+            else:
+                for g in sorted({group_of(disp(r)) for r in games}):
+                    n = sum(1 for r in games if group_of(disp(r)) == g)
+                    out("  <menu id=%s label=%s execute=%s/>"
+                        % (quoteattr("mame-%s-%s" % (key, g)),
+                           quoteattr("%s  (%d)" % (g, n)),
+                           quoteattr("%s mame %s %s" % (SELF, shq(mode), shq(g)))))
+        out("</openbox_pipe_menu>")
+        return
+
+    roms = scan(system)
+
+    # hidden.list removes an entry from the MENU only -- the ROM stays on disk.
+    # For duplicate regional dumps you will never play, so All Games is not
+    # cluttered with near-identical names.
+    hidden = set(read_list(system, "hidden"))
+    if hidden:
+        hb = {os.path.basename(h) for h in hidden}
+        roms = [(r, f) for r, f in roms
+                if r not in hidden and os.path.basename(r) not in hb]
+
+    if mode == "collections":
+        cols = collections(system)
+        for c in cols:
+            n = len(read_list(system, "collection:" + c))
+            out("  <menu id=%s label=%s execute=%s/>"
+                % (quoteattr("%s-col-%s" % (system, c)),
+                   quoteattr("%s  (%d)" % (c, n)),
+                   quoteattr("%s %s %s" % (SELF, system, shq("collection:" + c)))))
+        if not cols:
+            out("  <item label=\"No collections yet\"><action name=\"Execute\"><command>true</command></action></item>")
+    elif mode in ("favorites", "working") or mode.startswith("collection:"):
+        wanted = read_list(system, mode)
+        byrel = {r: f for r, f in roms}
+        shown = 0
+        for rel in wanted:
+            full = byrel.get(rel)
+            if full is None:                       # tolerate a moved/renamed ROM
+                cand = [f for r, f in roms if os.path.basename(r) == os.path.basename(rel)]
+                full = cand[0] if cand else None
+            if full:
+                item(system, title(rel), full); shown += 1
+        if shown == 0:
+            hint = ("No favourites yet." if mode == "favorites"
+                    else "Nothing confirmed working yet." if mode == "working"
+                    else "This collection is empty.")
+            out("  <item label=%s><action name=\"Execute\"><command>true</command></action></item>"
+                % quoteattr(hint))
+    else:
+        if group:
+            for rel, full in roms:
+                if group_of(title(rel)) == group:
+                    item(system, title(rel), full)
+        elif len(roms) <= FLAT_MAX:
+            for rel, full in roms:
+                item(system, title(rel), full)
+            if not roms:
+                out("  <item label=\"No ROMs found\"><action name=\"Execute\"><command>true</command></action></item>")
+        else:
+            groups = sorted({group_of(title(r)) for r, _ in roms})
+            for g in groups:
+                n = sum(1 for r, _ in roms if group_of(title(r)) == g)
+                out("  <menu id=%s label=%s execute=%s/>"
+                    % (quoteattr("%s-all-%s" % (system, g)),
+                       quoteattr("%s  (%d)" % (g, n)),
+                       quoteattr("%s %s all %s" % (SELF, system, shq(g)))))
+    out("</openbox_pipe_menu>")
+
+
+if __name__ == "__main__":
+    main()

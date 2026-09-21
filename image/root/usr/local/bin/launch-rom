@@ -1,0 +1,22 @@
+#!/bin/bash
+# Launch one ROM. Called from the generated openbox menus.
+#   launch-rom nes "/roms/nes/<file>.nes"
+set -u
+. /usr/local/bin/retro-audio-env      # PULSE_* -- without this emulators are silent
+. /usr/local/bin/retro-systems
+
+SYS="${1:-}"; ROM="${2:-}"
+[ -z "$SYS" ] || [ -z "$ROM" ] && { echo "usage: launch-rom <system> <rom>"; exit 2; }
+
+CORE="$(retro_core_for "$SYS")"
+[ -z "$CORE" ] && { echo "no core mapped for system: $SYS"; exit 2; }
+[ -f "$RETRO_CORE_DIR/$CORE" ] || { echo "core missing: $RETRO_CORE_DIR/$CORE"; exit 2; }
+[ -f "$ROM" ] || { echo "rom missing: $ROM"; exit 2; }
+
+# RetroArch needs a writable home and a runtime dir, or it fails to save configs
+# and per-core overrides silently stop persisting.
+export HOME=/config
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg-$(id -u)}"
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+exec retroarch --appendconfig "$RETRO_DRIVER_CFG" -L "$RETRO_CORE_DIR/$CORE" "$ROM"

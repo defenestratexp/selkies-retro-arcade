@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- {{ ansible_managed }}
+     Standalone MAME 0.264 input map. Same layout as the libretro cores:
+       C = coin   A S D = buttons 1 2 3   Q W E = buttons 4 5 6   Enter = start
+     NOTE: this is MAME's own UI, not RetroArch. The in-game menu is TAB,
+     and Esc quits. F1 does nothing here.
+     MAME rewrites this file on exit and strips tags it does not recognise, so
+     if a binding ever disappears, that port name was invalid. -->
+<mameconfig version="10">
+    <system name="default">
+        <input>
+            <port type="COIN1"><newseq type="standard">KEYCODE_C</newseq></port>
+            <port type="START1"><newseq type="standard">KEYCODE_ENTER</newseq></port>
+            <port type="P1_BUTTON1"><newseq type="standard">KEYCODE_A</newseq></port>
+            <port type="P1_BUTTON2"><newseq type="standard">KEYCODE_S</newseq></port>
+            <port type="P1_BUTTON3"><newseq type="standard">KEYCODE_D</newseq></port>
+            <port type="P1_BUTTON4"><newseq type="standard">KEYCODE_Q</newseq></port>
+            <port type="P1_BUTTON5"><newseq type="standard">KEYCODE_W</newseq></port>
+            <port type="P1_BUTTON6"><newseq type="standard">KEYCODE_E</newseq></port>
+        </input>
+    </system>
+</mameconfig>

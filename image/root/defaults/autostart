@@ -1,0 +1,14 @@
+# Openbox root menu is the launcher -- right-click the desktop. Nothing
+# auto-launches an application on purpose: if one wedged, an autostarted copy
+# would make the container hard to recover.
+#
+# A bare openbox session paints the root window black, which is
+# indistinguishable from "nothing is running". Give it a visible background so
+# the session obviously came up, and say where the menu is.
+xsetroot -solid "#1c2733" &
+(command -v xmessage >/dev/null && \
+  xmessage -geometry 460x120+40+40 -timeout 25 \
+    "Homelab Arcade
+
+Right-click anywhere on the desktop for the launcher menu.
+First time: choose 'Install / repair Windows apps'." &) 2>/dev/null

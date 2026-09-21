@@ -1,0 +1,5 @@
+---
+- name: Restart retro arcade
+  community.docker.docker_compose_v2:
+    project_src: "{{ retro_root }}"
+    state: restarted

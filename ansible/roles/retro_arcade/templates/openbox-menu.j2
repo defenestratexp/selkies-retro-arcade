@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- {{ ansible_managed }}
+     The launcher: right-click the desktop.
+
+     Managed HERE, not in the image. The base seeds /defaults into /config only
+     when /config is empty, so a menu.xml shipped in the image never reaches a
+     container that has already run once - which is how this menu once sat three
+     versions stale while the image was correct. -->
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+<menu id="root-menu" label="ARCADE">
+  <!-- Primary entry point. The session is pinned to 640x480 so apps fill the
+       browser, which makes deep pipe menus awkward to navigate; the launcher is
+       one window with fuzzy search over everything. The menus below still work
+       and read the same lists. -->
+  <item label="Game Launcher">
+    <action name="Execute"><command>/usr/local/bin/retro-launcher</command></action>
+  </item>
+  <separator />
+{% for app in retro_wine_apps %}
+  <item label="{{ app.label | e }}">
+    <action name="Execute"><command>/usr/local/bin/launch-wine '{{ app.exe }}'{{ (' ' ~ app.desktop) if app.desktop is defined else '' }}</command></action>
+  </item>
+{% endfor %}
+{% if retro_wine_apps %}
+  <separator />
+{% endif %}
+  <item label="ScummVM">
+    <action name="Execute"><command>/usr/local/bin/launch-scummvm</command></action>
+  </item>
+  <separator />
+  <item label="DOSBox-X (for DOS titles)">
+    <action name="Execute"><command>/usr/local/bin/launch-dosbox</command></action>
+  </item>
+  <separator />
+{% for sys in retro_emu_systems %}
+  <menu id="sys-{{ sys.key }}" label="{{ sys.label }}">
+    <menu id="{{ sys.key }}-fav"  label="Favorites"         execute="/usr/local/bin/retro-menu {{ sys.key }} favorites" />
+    <menu id="{{ sys.key }}-work" label="Confirmed Working" execute="/usr/local/bin/retro-menu {{ sys.key }} working" />
+    <menu id="{{ sys.key }}-col"  label="Collections"       execute="/usr/local/bin/retro-menu {{ sys.key }} collections" />
+    <menu id="{{ sys.key }}-all"  label="All Games"         execute="/usr/local/bin/retro-menu {{ sys.key }} all" />
+    <separator />
+    <item label="Settings">
+      <action name="Execute"><command>/usr/local/bin/retro-emu-settings {{ sys.key }}</command></action>
+    </item>
+  </menu>
+{% endfor %}
+  <separator />
+  <menu id="sys-mame" label="MAME" execute="/usr/local/bin/retro-menu mame root" />
+  <separator />
+  <menu id="wine-menu" label="Wine">
+    <!-- WINEPREFIX is NOT set globally in the container; only the launch-*
+         scripts export it. Every entry here must pass it explicitly, or the
+         tool silently operates on a fresh prefix in $HOME instead of the
+         real one at /config/wine. -->
+    <item label="Wine Configuration (graphics, audio, DLL overrides)">
+      <action name="Execute"><command>env WINEPREFIX=/config/wine winecfg</command></action>
+    </item>
+    <item label="Wine File Manager">
+      <action name="Execute"><command>env WINEPREFIX=/config/wine winefile</command></action>
+    </item>
+    <item label="Registry Editor">
+      <action name="Execute"><command>env WINEPREFIX=/config/wine regedit</command></action>
+    </item>
+    <item label="Winetricks (install runtime libraries)">
+      <action name="Execute"><command>xterm -title "Winetricks" -geometry 100x30 -fa Monospace -fs 11 -e env WINEPREFIX=/config/wine winetricks</command></action>
+    </item>
+    <separator />
+    <item label="Force-quit Wine (unstick a hung game)">
+      <action name="Execute"><command>env WINEPREFIX=/config/wine wineserver -k</command></action>
+    </item>
+  </menu>
+  <separator />
+  <item label="Install / repair Windows apps">
+    <action name="Execute"><command>xterm -title "Install / repair Windows apps" -geometry 100x30 -fa Monospace -fs 11 -e /usr/local/bin/retro-install</command></action>
+  </item>
+  <item label="Terminal">
+    <action name="Execute"><command>xterm -title "Arcade terminal" -geometry 100x30 -fa Monospace -fs 11 -e /usr/local/bin/retro-shell</command></action>
+  </item>
+</menu>
+</openbox_menu>

@@ -1,0 +1,32 @@
+#!/bin/bash
+# Launch a Windows application from the persistent Wine prefix.
+#   launch-wine "Some App.exe"            -- desktop size from $WINE_DESKTOP
+#   launch-wine "Some App.exe" 800x600    -- explicit size
+#
+# The exe is located rather than hardcoded because an InstallShield target path
+# is chosen at install time.
+set -u
+. /usr/local/bin/retro-audio-env
+export WINEPREFIX="${WINEPREFIX:-/config/wine}"
+export WINEDEBUG=-all
+
+NAME="${1:-}"
+[ -z "$NAME" ] && { echo "usage: launch-wine <exe-name> [WxH]"; exit 2; }
+SIZE="${2:-$WINE_DESKTOP}"
+
+EXE=$(find "$WINEPREFIX/drive_c" -iname "$NAME" 2>/dev/null | head -1)
+if [ -z "$EXE" ]; then
+    xterm -title "$NAME not installed" -e bash -c \
+      'echo "'"$NAME"' is not installed in the Wine prefix yet."; \
+       echo; echo "Use Install / repair Windows apps from the desktop menu first."; \
+       echo; read -p "Press enter to close..."'
+    exit 1
+fi
+cd "$(dirname "$EXE")" || exit 1
+
+# Run inside a Wine virtual desktop. The Selkies Xvfb advertises only large
+# modes (15360x8640, 3352x1340...) and no 640x480, so an old application's own
+# mode search fails with "cannot find the default display mode". A virtual
+# desktop makes Wine emulate the mode in a window instead of asking X for it.
+DESK="$(basename "$NAME" | tr -c 'A-Za-z0-9\n' '_')"
+exec wine explorer /desktop="${DESK}","${SIZE}" "$EXE"

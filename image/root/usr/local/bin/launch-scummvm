@@ -1,0 +1,5 @@
+#!/bin/bash
+# ScummVM with the audio environment this base image needs.
+set -u
+. /usr/local/bin/retro-audio-env
+exec scummvm "$@"

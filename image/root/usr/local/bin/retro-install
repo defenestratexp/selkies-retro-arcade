@@ -1,0 +1,29 @@
+#!/bin/bash
+# One-time install of Windows applications into the PERSISTENT Wine prefix.
+#
+# Why run the vendor installer rather than ship an extracted tree: InstallShield
+# 5 cabinet sets can have a file that straddles the data1.cab -> data2.cab
+# volume boundary. unshield cannot span volumes and silently omits such a file,
+# so an "extracted" copy can be one file short with no error. InstallShield's own
+# installer handles the span correctly. InstallShield 6+ cabinets cannot be read
+# by unshield at all.
+set -u
+export WINEPREFIX="${WINEPREFIX:-/config/wine}"
+export WINEDEBUG=-all
+INSTALLERS=/games/_installers
+
+mkdir -p "$WINEPREFIX"
+[ -d "$WINEPREFIX/drive_c" ] || { echo "Initialising Wine prefix (first run, takes a minute)..."; wineboot --init; }
+
+echo
+echo "Installers available in $INSTALLERS:"
+ls -1 "$INSTALLERS"/*.exe 2>/dev/null || { echo "  none found -- is /games mounted?"; sleep 10; exit 1; }
+echo
+echo "Pick one; the installer wizard opens in this session."
+select f in "$INSTALLERS"/*.exe "quit"; do
+    [ "$f" = "quit" ] && break
+    [ -n "${f:-}" ] || continue
+    echo "Running $(basename "$f") ..."
+    wine "$f"
+    echo "Done. Close this window and launch the app from the desktop menu."
+done

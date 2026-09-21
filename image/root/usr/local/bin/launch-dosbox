@@ -1,0 +1,5 @@
+#!/bin/bash
+# DOSBox-X with the audio environment this base image needs.
+set -u
+. /usr/local/bin/retro-audio-env
+exec dosbox-x "$@"

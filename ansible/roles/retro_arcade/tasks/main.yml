@@ -1,0 +1,394 @@
+---
+# Deploy the retro arcade to a docker host.
+#
+# Content is copied LOCAL at deploy time. The NAS is the archive and source of
+# truth, but the running arcade never touches NFS -- a stale handle must not be
+# able to take it down.
+
+- name: Fail early if docker is absent
+  ansible.builtin.command: docker --version
+  register: retro_docker_check
+  changed_when: false
+  failed_when: retro_docker_check.rc != 0
+  # Install docker on the target first.
+
+- name: Create arcade directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    # games/ is root-owned so the read-only bind cannot be subverted from inside.
+    - { path: "{{ retro_root }}",       owner: root, group: root, mode: "0755" }
+    - { path: "{{ retro_games_dir }}",  owner: root, group: root, mode: "0755" }
+    - { path: "{{ retro_state_dir }}",  owner: "{{ retro_uid }}", group: "{{ retro_gid }}", mode: "0775" }
+
+# --- deploy-time only: mount, copy, unmount -------------------------------
+- name: Mount the NAS archive read-only (deploy-time only)
+  ansible.posix.mount:
+    path: "{{ retro_archive_mnt }}"
+    src: "{{ retro_archive_export }}"
+    fstype: nfs
+    opts: "ro,timeo=900,retrans=5,_netdev"
+    state: mounted
+
+- name: Sync the archive to local disk
+  ansible.builtin.command:
+    cmd: "rsync -a --delete {{ retro_archive_mnt }}/ {{ retro_games_dir }}/"
+  register: retro_sync
+  changed_when: retro_sync.rc == 0
+  notify: Restart retro arcade
+
+- name: Unmount the archive so the runtime has no NFS dependency
+  ansible.posix.mount:
+    path: "{{ retro_archive_mnt }}"
+    state: unmounted
+
+# --- ROMs: same deploy-time mount/copy/unmount, separate tree --------------
+- name: Ensure the ROM directory exists
+  ansible.builtin.file:
+    path: "{{ retro_roms_dir }}/{{ item.key }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ retro_emu_systems }}"
+
+- name: Mount the NAS ROM share read-only (deploy-time only)
+  ansible.posix.mount:
+    path: "{{ retro_roms_mnt }}"
+    src: "{{ retro_roms_export }}"
+    fstype: nfs
+    opts: "ro,timeo=900,retrans=5,_netdev"
+    state: mounted
+
+- name: Sync each system's ROMs to local disk
+  ansible.builtin.command:
+    cmd: >-
+      rsync -a --delete
+      {{ retro_roms_mnt }}/{{ retro_roms_subdir }}/{{ item.key }}/
+      {{ retro_roms_dir }}/{{ item.key }}/
+  loop: "{{ retro_emu_systems }}"
+  register: retro_rom_sync
+  changed_when: retro_rom_sync.rc == 0
+  failed_when: retro_rom_sync.rc not in [0, 23]   # 23 = some files vanished mid-copy
+  notify: Restart retro arcade
+
+- name: Ensure the MAME ROM and config directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "0755"
+  loop:
+    - { path: "{{ retro_roms_dir }}/mame", owner: root }
+    - { path: "{{ retro_state_dir }}/arcade/mame", owner: "{{ retro_uid }}" }
+
+- name: Sync the MAME romset to local disk
+  # Flat pool: every version reads the same zips. The sweep proved which MAME
+  # runs each one; nothing is duplicated per version.
+  ansible.builtin.command:
+    cmd: >-
+      rsync -a --delete
+      {{ retro_roms_mnt }}/{{ retro_roms_subdir }}/mame/roms/
+      {{ retro_roms_dir }}/mame/
+  register: retro_mame_sync
+  changed_when: retro_mame_sync.rc == 0
+  failed_when: retro_mame_sync.rc not in [0, 23]
+  notify: Restart retro arcade
+
+- name: Install the MAME routing map produced by the compatibility sweep
+  # Maps romset -> the MAME version that actually loads it, so the launcher can
+  # pick the right emulator and the user never sees a version number.
+  ansible.builtin.copy:
+    src: "{{ retro_roms_mnt }}/_verified/mame-routing.json"
+    dest: "{{ retro_state_dir }}/arcade/mame/routing.json"
+    remote_src: true
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+
+- name: Install the MAME games export (aliases, preferred flags, verified state)
+  # Exported from a curation database table (not included here). Curate,
+  # re-run the export, redeploy -- the launcher and menus pick it up on next open.
+  # Optional: the launcher falls back to routing.json + names.json without it.
+  ansible.builtin.copy:
+    src: "{{ retro_roms_mnt }}/_verified/mame-games.json"
+    dest: "{{ retro_state_dir }}/arcade/mame/games.json"
+    remote_src: true
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+  failed_when: false
+
+- name: Ensure the Neo Geo directory exists
+  ansible.builtin.file:
+    path: "{{ retro_neogeo_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Sync the Neo Geo romset to local disk
+  ansible.builtin.command:
+    cmd: >-
+      rsync -a --delete
+      {{ retro_roms_mnt }}/{{ retro_roms_subdir }}/neogeo/
+      {{ retro_neogeo_dir }}/
+  register: retro_neogeo_sync
+  changed_when: retro_neogeo_sync.rc == 0
+  failed_when: retro_neogeo_sync.rc not in [0, 23]
+  notify: Restart retro arcade
+
+- name: Install per-core hiscore maps for the libretro MAME cores
+  # Each libretro MAME core reads hiscore.dat from its OWN system directory and
+  # the addresses are specific to that MAME generation, so one shared file will
+  # not do. Only mame2003-plus shipped with one, which is why a title's scores
+  # persisted or not depending purely on which core it happened to route to.
+  # Taken from each core's own upstream repository and virus-scanned before
+  # being archived on the NAS.
+  ansible.builtin.copy:
+    src: "{{ retro_roms_mnt }}/_verified/hiscore/{{ item.file }}"
+    dest: "{{ retro_state_dir }}/.config/retroarch/system/{{ item.core }}/hiscore.dat"
+    remote_src: true
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+  loop:
+    - { core: "mame2010", file: "mame2010.dat" }
+    - { core: "mame2016", file: "mame2016.dat" }
+  failed_when: false
+
+- name: Unmount the ROM share
+  ansible.posix.mount:
+    path: "{{ retro_roms_mnt }}"
+    state: unmounted
+
+- name: Ensure RetroArch config dirs exist and are writable by the desktop user
+  # Without these RetroArch falls back to defaults and per-core overrides never
+  # persist -- Settings appears to work and silently forgets on exit.
+  ansible.builtin.file:
+    path: "{{ retro_state_dir }}/.config/retroarch/{{ item }}"
+    state: directory
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0755"
+  loop: [ "", "saves", "states", "system", "config" ]
+
+- name: Deploy the Genesis Plus GX core config (bindings + 6-button pad)
+  # Managed here rather than left to RetroArch: the menu only writes this file
+  # on an explicit "Save Core Overrides", so a setting changed in-session and
+  # not saved is silently lost on exit.
+  ansible.builtin.template:
+    src: genesis-core.cfg.j2
+    dest: "{{ retro_state_dir }}/.config/retroarch/config/Genesis Plus GX/Genesis Plus GX.cfg"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+
+- name: Deploy keyboard bindings for the libretro MAME cores
+  ansible.builtin.template:
+    src: mame-core.cfg.j2
+    dest: "{{ retro_state_dir }}/.config/retroarch/config/{{ item }}/{{ item }}.cfg"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+  loop: "{{ retro_mame_cores }}"
+
+- name: Ensure the standalone MAME config directory exists
+  ansible.builtin.file:
+    path: "{{ retro_state_dir }}/.mame/cfg"
+    state: directory
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0775"
+
+- name: Ensure the MAME save directories exist
+  ansible.builtin.file:
+    path: "{{ retro_state_dir }}/.mame/{{ item }}"
+    state: directory
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0775"
+  loop: [ cfg, nvram, sta, snap, hiscore ]
+
+- name: Deploy mame.ini (hiscore plugin + persistent save paths)
+  # Without this, high scores in titles with no battery-backed NVRAM are lost
+  # the moment the emulator closes.
+  ansible.builtin.template:
+    src: mame-ini.j2
+    dest: "{{ retro_state_dir }}/.mame/mame.ini"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+
+- name: Deploy the standalone MAME input map
+  # MAME reads $HOME/.mame/cfg and launch-mame sets HOME=/config.
+  ansible.builtin.template:
+    src: mame-default-cfg.j2
+    dest: "{{ retro_state_dir }}/.mame/cfg/default.cfg"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+
+- name: Ensure the curation list directories exist
+  # copy does not create parent directories -- a deploy failed here with
+  # "Destination directory /opt/retro/state/arcade/nes does not exist".
+  ansible.builtin.file:
+    path: "{{ retro_state_dir }}/arcade/{{ item.key }}"
+    state: directory
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0775"
+  loop: "{{ retro_emu_systems }}"
+
+- name: Seed the curation lists (created once, then left alone)
+  ansible.builtin.copy:
+    dest: "{{ retro_state_dir }}/arcade/{{ item.0.key }}/{{ item.1 }}.list"
+    content: |
+      # {{ item.1 }} for {{ item.0.label }} -- one ROM path per line, relative to
+      # the system's ROM root. Managed with: retro-fav {{ item.0.key }} {{ item.1 }} add "<name>"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+    force: false
+  loop: "{{ retro_emu_systems | product(['favorites', 'working', 'hidden']) | list }}"
+
+# --- openbox session config (persistent volume, NOT the image) -------------
+# /defaults in the image is only a seed: the base copies it into /config just
+# once, when /config is empty. Anything shipped in the image after that first
+# run is silently ignored, so session config is managed here instead.
+- name: Ensure openbox config directory
+  ansible.builtin.file:
+    path: "{{ retro_state_dir }}/.config/openbox"
+    state: directory
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0775"
+
+- name: Deploy openbox autostart (desktop background)
+  ansible.builtin.template:
+    src: openbox-autostart.j2
+    dest: "{{ retro_state_dir }}/.config/openbox/autostart"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+  notify: Restart retro arcade
+
+# Both menu.xml AND menu.xml.bak, deliberately.
+#
+# init-selkies-config takes a one-time backup of menu.xml to menu.xml.bak
+# (guarded by [ ! -f "$USER_MENU_BAK" ]), and then on EVERY subsequent start it
+# copies the .bak back over menu.xml. So .bak froze at whatever the very first
+# container had, and silently clobbered every later edit -- from the image and
+# from this role alike. Writing both keeps the menu correct whichever file the
+# init script decides to copy.
+- name: Seed arcade.conf (user-editable; never overwritten)
+  ansible.builtin.template:
+    src: arcade.conf.j2
+    dest: "{{ retro_state_dir }}/arcade.conf"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+    force: false          # the whole point: edits made via retro-res must stick
+  # deliberately does NOT notify a restart -- launchers source it per-launch
+
+- name: Deploy openbox menu (the launcher)
+  ansible.builtin.template:
+    src: openbox-menu.j2
+    dest: "{{ retro_state_dir }}/.config/openbox/{{ item }}"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+  loop:
+    - menu.xml
+    - menu.xml.bak
+  notify: Restart retro arcade
+
+- name: Deploy openbox session environment (audio)
+  ansible.builtin.template:
+    src: openbox-environment.j2
+    dest: "{{ retro_state_dir }}/.config/openbox/environment"
+    owner: "{{ retro_uid }}"
+    group: "{{ retro_gid }}"
+    mode: "0664"
+  notify: Restart retro arcade
+
+- name: Set the openbox theme
+  # Patch the theme name in place rather than templating the whole rc.xml --
+  # a partial rc.xml would break the session, and the rest of the file is the
+  # base image's business, not ours.
+  ansible.builtin.replace:
+    path: "{{ retro_state_dir }}/.config/openbox/rc.xml"
+    regexp: '(<theme>\s*<name>)[^<]*(</name>)'
+    replace: '\1{{ retro_openbox_theme }}\2'
+  register: retro_theme
+  failed_when: false          # rc.xml only exists after the first session start
+  notify: Restart retro arcade
+
+# --- image + compose ------------------------------------------------------
+# The token task carries no_log (it prints a registry password), which means a
+# failure there is censored and tells you nothing. Assert the precondition first
+# so the common cause -- creds absent from the runner env -- reports plainly.
+- name: Assert AWS credentials reached the ansible runner
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'AWS_ACCESS_KEY_ID') | length > 0
+      - lookup('env', 'AWS_SECRET_ACCESS_KEY') | length > 0
+    fail_msg: >-
+      AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set in the ansible
+      runner environment, so an ECR token cannot be obtained. A CI job should
+      inject these (e.g. Jenkins withCredentials); running this playbook by
+      hand needs them exported first.
+
+- name: Obtain an ECR login token
+  # Via the aws-cli container rather than a local CLI: the target has docker
+  # but no aws binary, and installing one just to pull an image would leave
+  # standing AWS tooling on a desktop. `-e VAR` passes the value through from the
+  # environment, so the credentials never appear in argv (and so never in ps).
+  ansible.builtin.command:
+    cmd: >-
+      docker run --rm
+      -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY
+      amazon/aws-cli ecr get-login-password --region {{ retro_ecr_region }}
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+    AWS_SECRET_ACCESS_KEY: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+  register: retro_ecr_token
+  changed_when: false
+  no_log: true
+
+- name: Log the docker host into ECR
+  community.docker.docker_login:
+    registry_url: "{{ retro_ecr_registry }}"
+    username: AWS
+    password: "{{ retro_ecr_token.stdout }}"
+    reauthorize: true
+  no_log: true
+
+- name: Render docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ retro_root }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart retro arcade
+
+- name: Start the arcade
+  community.docker.docker_compose_v2:
+    project_src: "{{ retro_root }}"
+    state: present
+    pull: always
+
+- name: Wait for the web client to answer
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ retro_http_port }}/"
+    status_code: [200, 301, 302, 401]
+  register: retro_up
+  retries: 30
+  delay: 5
+  until: retro_up is succeeded

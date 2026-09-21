@@ -1,0 +1,419 @@
+#!/usr/bin/python3
+"""Full-screen launcher for the arcade desktop.
+
+Built because the openbox pipe menus become unusable at 640x480: the session is
+pinned small so games fill the browser, which leaves nested submenus cramped and
+fiddly. This is one window, keyboard-driven, with fuzzy search across everything.
+
+Reads the same data the menus do -- routing.json / names.json for MAME, the ROM
+trees for the console systems, and the same favorites.list files -- so curation
+done here shows up in the menus and vice versa.
+"""
+import json, os, subprocess, sys, tkinter as tk
+from tkinter import font as tkfont
+
+ROM_ROOT   = "/roms"
+LIST_ROOT  = "/config/arcade"
+MAME_DIR   = os.path.join(LIST_ROOT, "mame")
+LAUNCH_ROM = "/usr/local/bin/launch-rom"
+LAUNCH_MAME= "/usr/local/bin/launch-mame"
+
+EXTS = {
+    "nes":      (".nes", ".zip"),
+    "gameboy":  (".gb", ".gbc", ".zip"),
+    "sms":      (".sms", ".7z", ".zip"),
+    "genesis":  (".md", ".bin", ".gen", ".smd", ".zip"),
+    "gamegear": (".gg", ".zip"),
+}
+CONSOLES = [("nes","NES"), ("gameboy","Game Boy"), ("sms","Master System"),
+            ("genesis","Genesis"), ("gamegear","Game Gear")]
+MAME_CORES = [("mame0264","MAME 0.264"), ("mame2016","MAME 0.174"),
+              ("mame2010","MAME 0.139"), ("mame2003_plus","MAME 0.78")]
+
+# Not ROM-scanned: these launch through Wine, ScummVM or DOSBox-X rather than
+# from a ROM directory, so they are listed explicitly. ScummVM is one entry
+# because it carries its own picker. Add installed Windows applications as
+#   ("Label", "key", ["/usr/local/bin/launch-wine", "App.exe"]),
+PC_GAMES = [
+    ("ScummVM",                   "scummvm", ["/usr/local/bin/launch-scummvm"]),
+    ("DOSBox-X",                  "dosbox",  ["/usr/local/bin/launch-dosbox"]),
+]
+
+BG, FG, SEL, DIM, ACC = "#12141a", "#e8e8ea", "#2d4f8a", "#8a8f98", "#ffd166"
+
+
+def read_list(system, which):
+    p = os.path.join(LIST_ROOT, system, which + ".list")
+    try:
+        with open(p) as fh:
+            return [l.strip() for l in fh if l.strip() and not l.startswith("#")]
+    except Exception:
+        return []
+
+
+def write_list(system, which, entries):
+    d = os.path.join(LIST_ROOT, system)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, which + ".list"), "w") as fh:
+        fh.write("\n".join(entries) + ("\n" if entries else ""))
+
+
+def load_json(p):
+    try:
+        with open(p) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def scan_console(system):
+    """(label, key, launch_args) for every ROM, honouring hidden.list."""
+    root = os.path.join(ROM_ROOT, system)
+    exts = EXTS.get(system, (".zip",))
+    hidden = set(read_list(system, "hidden"))
+    hb = {os.path.basename(h) for h in hidden}
+    out = []
+    for dp, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d != "__MACOSX"]
+        for f in files:
+            if f.startswith("._") or not f.lower().endswith(exts):
+                continue
+            full = os.path.join(dp, f)
+            rel = os.path.relpath(full, root)
+            if rel in hidden or f in hb:
+                continue
+            out.append((os.path.splitext(f)[0], rel, [LAUNCH_ROM, system, full]))
+    out.sort(key=lambda t: t[0].lower())
+    return out
+
+
+def mame_games():
+    """romset -> {label, core, preferred, search}.
+
+    games.json is exported from the retro_games.mame table and is authoritative
+    when present: it carries the alias you typed and the preferred flag that
+    hides duplicate revisions. Falls back to the raw sweep output otherwise, so
+    the launcher still works before the first sync.
+    """
+    db = load_json(os.path.join(MAME_DIR, "games.json"))
+    if db:
+        out = {}
+        for rom, rec in db.items():
+            label = rec.get("alias") or rec.get("name") or rom
+            # search over alias AND canonical name AND romset, so a word from
+            # the title finds the game whatever the set is called
+            terms = " ".join(x for x in (rec.get("alias"), rec.get("name"), rom) if x)
+            out[rom] = dict(label=label, core=rec.get("core"),
+                            preferred=rec.get("preferred", True), search=terms,
+                            platform=rec.get("platform", "arcade"))
+        return out
+    routing = load_json(os.path.join(MAME_DIR, "routing.json"))
+    names = load_json(os.path.join(MAME_DIR, "names.json"))
+    return {r: dict(label=names.get(r, r), core=v, preferred=True,
+                    search="%s %s" % (names.get(r, r), r), platform="arcade")
+            for r, v in routing.items()}
+
+
+def scan_mame(core):
+    """Arcade titles on one MAME version. Neo Geo is excluded -- it has its own
+    entry, so a game appears in exactly one place."""
+    out = [(g["label"], r, [LAUNCH_MAME, r])
+           for r, g in mame_games().items()
+           if g["core"] == core and g.get("preferred", True)
+           and g.get("platform", "arcade") != "neogeo"]
+    out.sort(key=lambda t: t[0].lower())
+    return out
+
+
+def scan_neogeo():
+    """Every playable Neo Geo title, whichever MAME version happens to run it."""
+    out = [(g["label"], r, [LAUNCH_MAME, r])
+           for r, g in mame_games().items()
+           if g.get("platform") == "neogeo" and g.get("preferred", True)]
+    out.sort(key=lambda t: t[0].lower())
+    return out
+
+
+def fuzzy(needle, hay):
+    """Subsequence match, scored so tighter and earlier matches rank first."""
+    if not needle:
+        return 0
+    n, h = needle.lower(), hay.lower()
+    if n in h:
+        return 1000 - h.index(n)
+    i = score = 0
+    last = -1
+    for ch in n:
+        i = h.find(ch, last + 1)
+        if i < 0:
+            return -1
+        score -= (i - last)
+        last = i
+    return score
+
+
+class Launcher:
+    def __init__(self, root):
+        self.root = root
+        root.title("Homelab Arcade")
+        root.configure(bg=BG)
+        root.attributes("-fullscreen", True)
+        self.big = tkfont.Font(family="DejaVu Sans", size=13, weight="bold")
+        self.mid = tkfont.Font(family="DejaVu Sans", size=11)
+        self.small = tkfont.Font(family="DejaVu Sans", size=9)
+
+        self.header = tk.Label(root, text="", bg=BG, fg=ACC, font=self.big, anchor="w", padx=8)
+        self.header.pack(fill="x", pady=(4, 0))
+
+        self.search_var = tk.StringVar()
+        self.search = tk.Entry(root, textvariable=self.search_var, bg="#1c1f27", fg=FG,
+                               insertbackground=FG, font=self.mid, relief="flat")
+        self.search.pack(fill="x", padx=8, pady=4, ipady=3)
+        self.search_var.trace_add("write", lambda *a: self.refresh())
+
+        self.listbox = tk.Listbox(root, bg=BG, fg=FG, font=self.mid, selectbackground=SEL,
+                                  selectforeground=FG, relief="flat", activestyle="none",
+                                  highlightthickness=0)
+        self.listbox.pack(fill="both", expand=True, padx=8)
+        self.listbox.bind("<Double-Button-1>", lambda e: self.activate())
+
+        self.status = tk.Label(root, text="", bg=BG, fg=DIM, font=self.small, anchor="w", padx=8)
+        self.status.pack(fill="x", pady=(0, 4))
+
+        for seq, fn in (("<Return>", self.activate), ("<Escape>", self.back),
+                        ("<F5>", lambda e: self.refresh()), ("<Control-f>", self.focus_search)):
+            root.bind(seq, fn)
+        root.bind("<F2>", self.toggle_fav)
+        root.bind("<F3>", self.toggle_working)
+        root.bind("<Down>", self.nav_down)
+        root.bind("<Up>", self.nav_up)
+
+        self.stack = []          # navigation breadcrumbs
+        self.items = []          # (label, key, args) currently listed
+        self.view = "home"
+        self.system = None
+        self.show_home()
+        self.search.focus_set()
+
+    # ---------- views ----------
+    def show_home(self):
+        self.view, self.system = "home", None
+        rows = []
+        favs = sum(len(read_list(s, "favorites")) for s, _ in CONSOLES) + len(read_list("mame", "favorites"))
+        rows.append(("★  Favorites  (%d)" % favs, "favorites", None))
+        for key, label in CONSOLES:
+            rows.append(("%s  (%d)" % (label, len(scan_console(key))), "sys:" + key, None))
+        rows.append(("PC & ScummVM  (%d)" % len(PC_GAMES), "sys:pc", None))
+        ng = len(scan_neogeo())
+        if ng:
+            rows.append(("Neo Geo  (%d)" % ng, "sys:neogeo", None))
+        routing = load_json(os.path.join(MAME_DIR, "routing.json"))
+        for key, label in MAME_CORES:
+            n = sum(1 for v in routing.values() if v == key)
+            if n:
+                rows.append(("%s  (%d)" % (label, n), "mame:" + key, None))
+        self.rows = rows
+        self.header.config(text="Homelab Arcade")
+        self.refresh()
+
+    def show_system(self, key):
+        if key == "sys:neogeo":
+            self.system, self.items = "mame", scan_neogeo()
+            self.view = "games"
+            self.header.config(text="Neo Geo")
+            self.search_var.set("")
+            self.refresh()
+            return
+        if key == "sys:pc":
+            self.system, self.items = "pc", list(PC_GAMES)
+            self.view = "games"
+            self.header.config(text="PC & ScummVM")
+            self.search_var.set("")
+            self.refresh()
+            return
+        if key.startswith("mame:"):
+            core = key.split(":", 1)[1]
+            self.system, self.items = "mame", scan_mame(core)
+            label = dict(MAME_CORES)[core]
+        else:
+            sysk = key.split(":", 1)[1]
+            self.system, self.items = sysk, scan_console(sysk)
+            label = dict(CONSOLES)[sysk]
+        self.view = "games"
+        self.header.config(text=label)
+        self.search_var.set("")
+        self.refresh()
+
+    def show_favorites(self):
+        self.view, self.system = "games", None
+        items = []
+        for key, label in CONSOLES:
+            want = set(read_list(key, "favorites"))
+            for lab, rel, args in scan_console(key):
+                if rel in want or os.path.basename(rel) in {os.path.basename(w) for w in want}:
+                    items.append(("%s  · %s" % (lab, label), rel, args))
+        want = set(read_list("mame", "favorites"))
+        routing = load_json(os.path.join(MAME_DIR, "routing.json"))
+        names = load_json(os.path.join(MAME_DIR, "names.json"))
+        for r in want:
+            if r in routing:
+                items.append(("%s  · MAME" % names.get(r, r), r, [LAUNCH_MAME, r]))
+        items.sort(key=lambda t: t[0].lower())
+        self.items = items
+        self.header.config(text="★ Favorites")
+        self.search_var.set("")
+        self.refresh()
+
+    # ---------- behaviour ----------
+    def refresh(self):
+        q = self.search_var.get().strip()
+        self.listbox.delete(0, "end")
+        if self.view == "home" and q:
+            # Global search. Typing at the top level used to filter the SYSTEM
+            # names, so a game title matched nothing -- searching everything is what
+            # anyone actually means here.
+            pool = self.everything()
+        elif self.view == "home":
+            pool = [(lab, k, None) for lab, k, _ in self.rows]
+        else:
+            pool = self.items
+        if q:
+            scored = [(fuzzy(q, lab), lab, k, a) for lab, k, a in pool]
+            scored = [s for s in scored if s[0] >= 0]
+            scored.sort(key=lambda t: (-t[0], t[1].lower()))
+            self.filtered = [(lab, k, a) for _, lab, k, a in scored]
+        else:
+            self.filtered = list(pool)
+        for lab, _k, _a in self.filtered[:2000]:
+            self.listbox.insert("end", "  " + lab)
+        if self.filtered:
+            self.listbox.selection_clear(0, "end")
+            self.listbox.selection_set(0)
+            self.listbox.activate(0)
+        hint = "Enter open  ·  Esc back  ·  F2 favourite  ·  F3 works  ·  type to search"
+        self.status.config(text="%d shown   %s" % (len(self.filtered), hint))
+
+    def everything(self):
+        """Every playable title across every system, built once and cached."""
+        if getattr(self, "_all", None) is not None:
+            return self._all
+        items = []
+        self._all_sys = {}
+        for key, label in CONSOLES:
+            for lab, rel, args in scan_console(key):
+                items.append(("%s  · %s" % (lab, label), rel, args))
+                self._all_sys[rel] = key
+        for lab, key, args in PC_GAMES:
+            items.append(("%s  · PC" % lab, key, args))
+            self._all_sys[key] = "pc"
+        core_label = dict(MAME_CORES)
+        for rom, g in mame_games().items():
+            if not g.get("preferred", True):
+                continue
+            cl = "Neo Geo" if g.get("platform") == "neogeo" else core_label.get(g.get("core"), "MAME")
+            items.append(("%s  · %s" % (g["search"], cl), rom, [LAUNCH_MAME, rom]))
+            self._all_sys[rom] = "mame"
+        items.sort(key=lambda t: t[0].lower())
+        self._all = items
+        return items
+
+    def system_of(self, key):
+        """Which system a global-search entry belongs to (view has no system)."""
+        return getattr(self, "_all_sys", {}).get(key)
+
+    def selected(self):
+        s = self.listbox.curselection()
+        i = s[0] if s else 0
+        return self.filtered[i] if 0 <= i < len(self.filtered) else None
+
+    def activate(self, _e=None):
+        sel = self.selected()
+        if not sel:
+            return
+        lab, key, args = sel
+        # A global search from the home screen lists GAMES while the view is
+        # still "home". Deciding by view sent those to show_system(), which
+        # looked for a system named after a ROM path and silently did nothing.
+        # Presence of a launch command is what distinguishes a game from a
+        # category, so branch on that instead.
+        if args is None and self.view == "home":
+            if key == "favorites":
+                self.stack.append(("home", None)); self.show_favorites()
+            else:
+                self.stack.append(("home", None)); self.show_system(key)
+            return
+        if args:
+            self.status.config(text="launching %s ..." % lab[:48])
+            self.root.update_idletasks()
+            try:
+                subprocess.Popen(args, start_new_session=True)
+            except Exception as exc:
+                self.status.config(text="failed: %s" % exc)
+
+    def back(self, _e=None):
+        if self.stack:
+            self.stack.pop()
+            self.search_var.set("")
+            self.show_home()
+        else:
+            self.root.destroy()
+
+    def toggle_fav(self, _e=None):
+        sel = self.selected()
+        if not sel:
+            return
+        lab, key, _a = sel
+        system = self.system or self.system_of(key)
+        if not system:
+            self.status.config(text="open the system first to curate this one")
+            return
+        favs = read_list(system, "favorites")
+        if key in favs:
+            favs.remove(key); msg = "removed from favourites"
+        else:
+            favs.append(key); msg = "added to favourites"
+        write_list(system, "favorites", favs)
+        self.status.config(text="%s: %s" % (msg, lab[:44]))
+
+    def toggle_working(self, _e=None):
+        """Mark the highlighted game as confirmed working.
+
+        Writes to the same working.list the openbox menus read. The sweep could
+        only tell us a game survived 8 seconds, which passes a title sitting on
+        an error screen -- this is the signal that actually means it runs, so it
+        is worth capturing at the moment of play rather than from memory later.
+        """
+        sel = self.selected()
+        if not sel:
+            return
+        lab, key, _a = sel
+        system = self.system or self.system_of(key)
+        if not system:
+            self.status.config(text="open the system first to curate this one")
+            return
+        work = read_list(system, "working")
+        if key in work:
+            work.remove(key); msg = "unmarked"
+        else:
+            work.append(key); msg = "CONFIRMED WORKING"
+        write_list(system, "working", work)
+        self.status.config(text="%s: %s" % (msg, lab[:44]))
+
+    def focus_search(self, _e=None):
+        self.search.focus_set()
+
+    def nav_down(self, _e=None):
+        i = (self.listbox.curselection() or [0])[0]
+        if i + 1 < self.listbox.size():
+            self.listbox.selection_clear(0, "end"); self.listbox.selection_set(i + 1)
+            self.listbox.activate(i + 1); self.listbox.see(i + 1)
+
+    def nav_up(self, _e=None):
+        i = (self.listbox.curselection() or [0])[0]
+        if i > 0:
+            self.listbox.selection_clear(0, "end"); self.listbox.selection_set(i - 1)
+            self.listbox.activate(i - 1); self.listbox.see(i - 1)
+
+
+if __name__ == "__main__":
+    Launcher(tk.Tk()).root.mainloop()

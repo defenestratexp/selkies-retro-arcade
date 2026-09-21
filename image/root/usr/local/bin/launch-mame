@@ -1,0 +1,43 @@
+#!/bin/bash
+# Launch an arcade game under whichever MAME version actually runs it.
+#   launch-mame <romset>
+# routing.json (produced by an external compatibility sweep, not included here)
+# maps romset -> version. The user never sees a version number; they pick a
+# game and the right emulator starts.
+set -u
+. /usr/local/bin/retro-audio-env
+. /usr/local/bin/retro-systems
+
+GAME="${1:-}"
+[ -z "$GAME" ] && { echo "usage: launch-mame <romset>"; exit 2; }
+
+ROMS=/roms/mame
+NEOGEO=/roms-neogeo      # separate tree; see the ansible role for why
+ROUTING=/config/arcade/mame/routing.json
+CORES=/opt/cores
+
+export HOME=/config
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg-$(id -u)}"
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+VER=$(/lsiopy/bin/python3 - "$ROUTING" "$GAME" <<'PY' 2>/dev/null
+import json,sys
+try: print(json.load(open(sys.argv[1])).get(sys.argv[2],""))
+except Exception: print("")
+PY
+)
+[ -z "$VER" ] && VER=mame0264      # unrouted: try the packaged one anyway
+
+case "$VER" in
+  mame0264)
+      exec mame -rompath "$ROMS;$NEOGEO" "$GAME" ;;
+  mame2003_plus|mame2010|mame2016)
+      # a Neo Geo set lives in the other tree; its BIOS sits beside it there
+      if [ -f "$ROMS/$GAME.zip" ]; then
+          exec retroarch --appendconfig "$RETRO_DRIVER_CFG" -L "$CORES/${VER}_libretro.so" "$ROMS/$GAME.zip"
+      else
+          exec retroarch --appendconfig "$RETRO_DRIVER_CFG" -L "$CORES/${VER}_libretro.so" "$NEOGEO/$GAME.zip"
+      fi ;;
+  *)
+      echo "unknown MAME version '$VER' for $GAME"; exit 2 ;;
+esac

@@ -1,0 +1,28 @@
+# Sourced by the emulator scripts. Single place that knows which core plays what.
+# Master System, Genesis and Game Gear all share Genesis Plus GX.
+retro_core_for() {
+    case "$1" in
+        nes)      echo nestopia_libretro.so ;;
+        gameboy)  echo gambatte_libretro.so ;;
+        sms)      echo genesis_plus_gx_libretro.so ;;
+        genesis)  echo genesis_plus_gx_libretro.so ;;
+        gamegear) echo genesis_plus_gx_libretro.so ;;
+        *)        echo "" ;;
+    esac
+}
+retro_label_for() {
+    case "$1" in
+        nes)      echo "NES" ;;
+        gameboy)  echo "Game Boy" ;;
+        sms)      echo "Master System" ;;
+        genesis)  echo "Genesis" ;;
+        gamegear) echo "Game Gear" ;;
+        *)        echo "$1" ;;
+    esac
+}
+RETRO_CORE_DIR=/usr/lib/x86_64-linux-gnu/libretro
+RETRO_ROM_ROOT=/roms
+RETRO_LIST_ROOT=/config/arcade
+# Driver pins appended over the mutable /config config on every RetroArch
+# launch. Without these RetroArch never sees a keypress -- see the file itself.
+RETRO_DRIVER_CFG=/etc/retroarch-drivers.cfg

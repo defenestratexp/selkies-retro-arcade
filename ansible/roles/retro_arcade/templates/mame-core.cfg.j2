@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+#
+# Keyboard layout for the libretro MAME cores, matching standalone MAME and
+# the Genesis pad so the arcade feels the same everywhere:
+#
+#   C = coin     A S D = buttons 1 2 3     Q W E = buttons 4 5 6     Enter = start
+#
+# These cores expose MAME's buttons through RetroPad slots. The mapping was read
+# off Port 1 Controls with a game loaded rather than assumed:
+#   button 1 = B   button 2 = A   button 3 = Y   button 4 = X   coin = Select
+# Buttons 5 and 6 sit on L and R by the same convention.
+#
+# Verified in-game on the 0.78 and 0.139 cores. 0.174 is unverified only
+# because its test title could not be started at the time, not because of a
+# mapping problem.
+input_player1_b = "a"
+input_player1_a = "s"
+input_player1_y = "d"
+input_player1_x = "q"
+input_player1_l = "w"
+input_player1_r = "e"
+input_player1_select = "c"
+input_player1_start = "enter"
+input_player1_up = "up"
+input_player1_down = "down"
+input_player1_left = "left"
+input_player1_right = "right"

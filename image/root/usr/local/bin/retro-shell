@@ -1,0 +1,17 @@
+#!/bin/bash
+# Interactive shell for the desktop's Terminal entry. Sources the audio
+# environment so anything launched by hand from here has working sound too --
+# openbox itself does not export it, so a bare xterm would not.
+set -u
+. /usr/local/bin/retro-audio-env
+export WINEPREFIX="${WINEPREFIX:-/config/wine}"
+cat <<'BANNER'
+  Homelab Arcade
+
+  Launch:     launch-wine "<App>.exe" | launch-scummvm | launch-dosbox
+  Setup:      retro-install
+  Resolution: retro-res            (e.g. retro-res 1024x768 -- no redeploy)
+  Installers: /games/_installers
+  Wine:       $WINEPREFIX
+BANNER
+exec bash -i

@@ -1,0 +1,68 @@
+# {{ ansible_managed }}
+# Retro arcade. Rendered by roles/retro_arcade.
+services:
+  retro-arcade:
+    image: "{{ retro_image }}"
+    container_name: "{{ retro_container_name }}"
+    restart: unless-stopped
+
+    environment:
+      PUID: "{{ retro_uid }}"
+      PGID: "{{ retro_gid }}"
+      TZ: "{{ retro_timezone }}"
+      TITLE: "{{ retro_title }}"
+      # PIN the session size. Selkies otherwise follows the browser viewport:
+      # modes accumulate in xrandr (800x600, 2880x1556, 1680x998 ...) and the
+      # app ends up a small rectangle inside a large desktop. Locking the
+      # session to the app's own size means Selkies upscales it to fill the
+      # browser instead.
+      #
+      # SELKIES_ENABLE_RESIZE used to be set here and did NOTHING -- it does not
+      # exist in this selkies build (--help lists no such option). These three
+      # are the real control.
+      SELKIES_IS_MANUAL_RESOLUTION_MODE: "true"
+      SELKIES_MANUAL_WIDTH: "{{ retro_screen.split('x')[0] }}"
+      SELKIES_MANUAL_HEIGHT: "{{ retro_screen.split('x')[1] }}"
+      DISPLAY_SIZEW: "{{ retro_screen.split('x')[0] }}"
+      DISPLAY_SIZEH: "{{ retro_screen.split('x')[1] }}"
+      DISPLAY_REFRESH: "{{ retro_framerate }}"
+
+      # Audio. openbox-environment already exports these for the DESKTOP
+      # session, but Selkies is started by s6, not by openbox, so it never saw
+      # them -- and its pcmflux capture is what actually puts sound in the
+      # browser. The base image sets PULSE_RUNTIME_PATH=/defaults on its own and
+      # that is NOT sufficient: libpulse declines to use a runtime directory it
+      # does not own (/defaults is root's), so only an explicit PULSE_SERVER
+      # works. Verified directly in the container -- with PULSE_RUNTIME_PATH
+      # alone, pactl as abc returns "Connection refused"; with PULSE_SERVER it
+      # connects. The matching directory-permission half of this bug is fixed in
+      # the image (chmod 0755 /defaults).
+      PULSE_SERVER: "unix:/defaults/native"
+      # Set explicitly rather than relying on this build's undocumented default
+      # -- --help lists the flag but prints no default, and silent audio is
+      # exactly the kind of regression nobody notices until they are in an
+      # office with headphones on.
+      SELKIES_AUDIO_ENABLED: "true"
+
+    ports:
+      # Bound on all interfaces so the reverse proxy can reach it. Any public
+      # exposure belongs behind an authenticating proxy (e.g. Cloudflare
+      # Access in front of a tunnel), never on this port directly.
+      - "{{ retro_http_port }}:3000"
+
+    volumes:
+      # Content is READ-ONLY. Even a container escape cannot corrupt the library;
+      # the writable Wine prefix and saves live in state/ instead.
+      - "{{ retro_games_dir }}:/games:ro"
+      # ROMs are a separate mount so the archive rsync --delete cannot reach them.
+      - "{{ retro_roms_dir }}:/roms:ro"
+      # Neo Geo lives outside the MAME pool so the pool's rsync --delete cannot
+      # remove it; MAME reaches it via a second rompath entry.
+      - "{{ retro_neogeo_dir }}:/roms-neogeo:ro"
+      - "{{ retro_state_dir }}:/config"
+
+    # Low-resolution content software-encoded -- no /dev/dri passthrough needed.
+    shm_size: "1gb"
+
+    security_opt:
+      - no-new-privileges:true

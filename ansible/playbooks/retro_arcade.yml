@@ -1,0 +1,14 @@
+---
+# Retro arcade: a Linux desktop streamed to the browser via Selkies (WebRTC,
+# audio in-stream), deployed as a single container on a docker host and fronted
+# by a reverse proxy.
+#
+# Prerequisites:
+#   docker + the community.docker / ansible.posix collections on the target
+#   the image built and pushed by ../Jenkinsfile
+#   a DNS name + reverse-proxy vhost -> <stream-host>:3000 (websocket upgrade on)
+- name: Deploy the retro arcade
+  hosts: stream_host
+  become: true
+  roles:
+    - retro_arcade

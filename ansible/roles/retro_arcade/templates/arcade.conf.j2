@@ -1,0 +1,14 @@
+# Arcade runtime settings. Edit freely -- ansible seeds this file once and then
+# leaves it alone (force: no), so your changes survive redeploys.
+#
+# Sourced by every launcher via /usr/local/bin/retro-audio-env.
+# Takes effect on the next launch; no rebuild or redeploy needed.
+#
+# Easiest way to change resolution is the helper, from the Terminal entry:
+#     retro-res 1024x768
+#
+# Why this exists: legacy Windows applications ask X for a display mode they
+# recognise. The Selkies display offers only very large ones, so Wine emulates
+# the mode in a window instead -- this is the size of that window.
+
+WINE_DESKTOP={{ retro_wine_desktop }}
