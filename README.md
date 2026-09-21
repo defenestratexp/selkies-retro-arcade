@@ -12,27 +12,12 @@ Bring your own legally obtained software and ROM dumps.
 
 ## Architecture
 
-```
- browser ──HTTPS/WSS──► reverse proxy ──HTTP/WS──► stream-host:3000
- (WebRTC client)        (nginx, optional            │
-                         Cloudflare Tunnel+Access)  ▼
-                                        ┌──────────────────────────────┐
-                                        │ retro-arcade container       │
-                                        │  Selkies (WebRTC, pcmflux)   │
-                                        │  Xvfb + openbox desktop      │
-                                        │  PulseAudio null sink        │
-                                        │  RetroArch / MAME / Wine ... │
-                                        └──┬─────────┬──────────┬──────┘
-                                  /games:ro│  /roms:ro│   /config│(rw state)
-                                        /opt/retro/{games,roms,state} on host
-                                                   ▲
-                       deploy-time only: NFS mount ─┘ rsync ─► unmount
-                                     (nas.example.internal)
-```
+![Architecture: browser to reverse proxy to the Selkies container (X server, PulseAudio, launchers, emulators and Wine); image from ECR, content synced from the NAS at deploy time](docs/diagrams/architecture.png)
 
 - **Image** (`image/`): LinuxServer `baseimage-selkies` (Ubuntu 24.04) plus Wine
   with i386 multiarch, 32-bit Mesa GL, RetroArch + three libretro cores, three
-  version-pinned libretro MAME cores, standalone MAME, ScummVM, DOSBox-X and a
+  libretro MAME cores for different MAME versions (2003-Plus, 2010, 2016; fetched
+  from the libretro nightly buildbot at build time), standalone MAME, ScummVM, DOSBox-X and a
   set of launcher scripts.
 - **CI** (`Jenkinsfile`): builds the image, runs a smoke test inside it
   (32-bit Wine present, 32-bit libGL present, cores present, menu generator

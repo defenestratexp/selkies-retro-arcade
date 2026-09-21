@@ -1,0 +1,43 @@
+direction: down
+
+user: "browser\n(WebRTC client)" {shape: person}
+
+edge: "Front door" {
+  direction: down
+  cf: "Cloudflare Tunnel + Access\n(optional, public hostname)" {shape: cloud}
+  nginx: "nginx reverse proxy\n(WebSocket upgrade, no buffering)"
+  cf -> nginx
+}
+
+host: "stream-host (docker)" {
+  direction: down
+  ctr: "retro-arcade container (:3000)" {
+    grid-columns: 1
+    selkies: "Selkies\nWebRTC video + pcmflux audio"
+    x: "Xvfb X server + openbox desktop"
+    pulse: "PulseAudio null sink"
+    launch: "launchers\nopenbox pipe menus, Tk launcher"
+    apps: "emulators and Wine\nRetroArch, MAME, ScummVM, DOSBox-X, Wine (i386)"
+  }
+  disk: "/opt/retro on local disk\ngames (ro), roms (ro), state (rw /config)" {shape: cylinder}
+  disk -> ctr: "bind mounts"
+}
+
+nas: "NAS\n(NFS export)" {shape: cylinder}
+ansible: "Ansible role retro_arcade"
+jenkins: "Jenkins\nbuild + smoke test"
+ecr: "Amazon ECR" {shape: cylinder}
+
+user <-> edge.cf: "HTTPS / WSS"
+user <-> edge.nginx: "HTTPS / WSS (LAN)"
+edge.nginx <-> host.ctr.selkies: "HTTP / WS"
+host.ctr.launch -> host.ctr.apps: "starts"
+host.ctr.apps -> host.ctr.x: "draws"
+host.ctr.apps -> host.ctr.pulse: "sound"
+host.ctr.x -> host.ctr.selkies: "capture"
+host.ctr.pulse -> host.ctr.selkies: "capture"
+
+jenkins -> ecr: "push image"
+ecr -> host.ctr: "pull"
+ansible -> host: "session config, compose up"
+nas -> host.disk: "deploy-time only:\nmount, rsync, unmount"
